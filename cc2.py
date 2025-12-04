@@ -19,8 +19,10 @@ PRINCIPAL_EMAIL = "principal@example.com"   # Same Principal
 REGISTRAR_EMAIL = "registrar@example.com"   # Same Registrar
 SECURITY_EMAIL = "shivrajggct73839@gmail.com"  # From your old code
 
-SENDER_EMAIL = "aids24.shivrajgupta@ggct.co.in"
-SENDER_PASS = "buekqnqazapxctme"
+# ====== BREVO SMTP CONFIG ======
+SENDER_EMAIL = "9d5cf2001@smtp-brevo.com"
+SENDER_PASS  = "gcHxNT81bDyCsqLn"
+
 
 DB_NAME = "gatepass.db"
 
@@ -159,17 +161,17 @@ def send_email(to_email, subject, html):
         msg.set_content("HTML email required")
         msg.add_alternative(html, subtype="html")
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        # ------ BREVO SMTP ------
+        with smtplib.SMTP("smtp-relay.brevo.com", 587) as smtp:
+            smtp.starttls()
             smtp.login(SENDER_EMAIL, SENDER_PASS)
             smtp.send_message(msg)
 
         print("✅ Email sent to", to_email)
+
     except Exception as e:
         print("❌ Email failed:", e)
 
-
-def get_base_url():
-    return request.host_url.rstrip("/")
 
 
 # ====== HOD TIMEOUT WATCHDOG (10 MIN) ======
