@@ -664,7 +664,8 @@ def class_approve(req_id):
 
             # Emergency HOD approval link (Class Incharge ke liye)
             year = data[3]
-            class_email = CLASS_INCHARGE_MAP.get(year)
+            class_email = CLASS_INCHARGE_MAP.get(year)git status
+
             emergency_url = f"{base}{url_for('emergency_hod_approve', req_id=req_id)}"
             start_hod_timeout_watchdog(req_id, class_email, emergency_url)
 

@@ -255,7 +255,7 @@ def home():
     <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>Gyan Ganga College of Technology – Gate Pass</title>
+        <title>GGCT Gate Pass</title>
 
         <style>
             * { box-sizing: border-box; font-family: system-ui, sans-serif; }
@@ -287,6 +287,11 @@ def home():
                 padding: 10px; border-radius: 999px; border: none;
                 font-size: 1rem; cursor: pointer;
             }
+            .otp-btn {
+                background:#1976d2;color:white;border:none;
+                padding:7px 18px;border-radius:8px;cursor:pointer;
+                margin-bottom:8px;
+            }
             #resend-btn {
                 margin-top: 6px; background: gray; color: white; border: none;
                 padding: 6px 14px; border-radius: 6px; cursor: not-allowed;
@@ -302,7 +307,7 @@ def home():
 
             <form method="POST" action="/submit">
 
-                <label>Student Name</label>
+                <label>Name</label>
                 <input name="name" required>
 
                 <label>Branch</label>
@@ -318,24 +323,23 @@ def home():
                     <option>4th Year</option>
                 </select>
 
-                <label>Roll No.</label>
+                <label>Roll No</label>
                 <input name="roll" required>
 
                 <label>Email</label>
-                <input id="email" name="email" type="email"
-                       required onblur="sendOTP()">
+                <input id="email" name="email" type="email" required>
 
-                <label>Parent Mobile Number</label>
+                <button type="button" class="otp-btn" onclick="sendOTP()">Send OTP</button>
+
+                <label>Parent Mobile</label>
                 <input name="parent_number" required maxlength="10">
 
-                <!-- OTP BOX -->
-                <div id="otp-box" style="display:none; margin-top:10px;">
+                <!-- OTP BOX ALWAYS VISIBLE -->
+                <div id="otp-box" style="margin-top:10px;">
                     <label>Email OTP</label>
                     <input id="otp" placeholder="Enter OTP">
 
-                    <button type="button" onclick="verifyOTP()"
-                        style="background:#1976d2;color:white;border:none;
-                        padding:7px 18px;border-radius:8px;cursor:pointer;">
+                    <button type="button" class="otp-btn" onclick="verifyOTP()">
                         Verify OTP
                     </button>
 
@@ -352,7 +356,7 @@ def home():
                 <input name="reason" required>
 
                 <label>Out Time</label>
-                <input name="out_time" required>
+                <input name="out_time" required placeholder="3:30 PM">
 
                 <label>Date</label>
                 <input type="date" name="date" required>
@@ -360,10 +364,11 @@ def home():
                 <button class="btn-primary" type="submit">Submit Gate Pass</button>
             </form>
 
-            <div style="display:flex; justify-content:space-between; margin-top:12px;">
-                <a href="/scanner">🔍 Security Scanner</a>
-                <a href="/admin">📋 Admin Panel</a>
+            <div style="margin-top:18px; display:flex; justify-content:space-between;">
+                <a href="/scanner" style="color:#1565c0; font-weight:600;">🔍 Security Scanner</a>
+                <a href="/admin" style="color:#1565c0; font-weight:600;">📋 Admin Panel</a>
             </div>
+
         </div>
 
 
@@ -372,10 +377,13 @@ def home():
 let timer = 30;
 let timerInterval;
 
-// ========== SEND OTP ==========
+// SEND OTP
 function sendOTP() {
     let email = document.getElementById("email").value;
-    if (!email) return;
+    if (!email) {
+        alert("Please enter email");
+        return;
+    }
 
     fetch("/send_otp", {
         method: "POST",
@@ -385,7 +393,6 @@ function sendOTP() {
     .then(res => res.text())
     .then(data => {
         if (data === "sent") {
-            document.getElementById("otp-box").style.display = "block";
             document.getElementById("otp-status").innerHTML = "OTP sent ✔";
             document.getElementById("otp-status").style.color = "green";
             startTimer();
@@ -393,10 +400,16 @@ function sendOTP() {
     });
 }
 
-// ========== VERIFY OTP ==========
+// VERIFY OTP
 function verifyOTP() {
     let email = document.getElementById("email").value;
     let otp = document.getElementById("otp").value;
+
+    if (!otp) {
+        document.getElementById("otp-status").innerHTML = "Enter OTP ❗";
+        document.getElementById("otp-status").style.color = "red";
+        return;
+    }
 
     fetch("/verify_otp", {
         method: "POST",
@@ -409,40 +422,40 @@ function verifyOTP() {
             document.getElementById("otp-status").innerHTML = "OTP Verified ✔";
             document.getElementById("otp-status").style.color = "green";
             document.getElementById("otp-verified").value = "yes";
-        } 
-        else {
-            document.getElementById("otp-status").innerHTML = "Incorrect OTP ❌";
+        } else {
+            document.getElementById("otp-status").innerHTML = "Wrong OTP ❌";
             document.getElementById("otp-status").style.color = "red";
-            document.getElementById("otp-verified").value = "no";
         }
     });
 }
 
-// ========== TIMER ==========
+// TIMER
 function startTimer() {
     timer = 30;
-    document.getElementById("resend-btn").innerHTML = "Resend OTP (" + timer + "s)";
-    document.getElementById("resend-btn").disabled = true;
-    document.getElementById("resend-btn").style.background = "gray";
+    let btn = document.getElementById("resend-btn");
+
+    btn.innerHTML = "Resend OTP (30s)";
+    btn.disabled = true;
+    btn.style.background = "gray";
 
     timerInterval = setInterval(() => {
         timer--;
-        document.getElementById("resend-btn").innerHTML = "Resend OTP (" + timer + "s)";
+        btn.innerHTML = "Resend OTP (" + timer + "s)";
         if (timer <= 0) {
             clearInterval(timerInterval);
-            document.getElementById("resend-btn").innerHTML = "Resend OTP";
-            document.getElementById("resend-btn").disabled = false;
-            document.getElementById("resend-btn").style.background = "#1976d2";
+            btn.innerHTML = "Resend OTP";
+            btn.disabled = false;
+            btn.style.background = "#1976d2";
         }
     }, 1000);
 }
 
-// ========== RESEND ==========
+// RESEND
 function resendOTP() {
     sendOTP();
 }
 
-// ========== BLOCK SUBMIT UNTIL OTP VERIFIED ==========
+// BLOCK SUBMIT IF OTP NOT VERIFIED
 document.addEventListener("DOMContentLoaded", function() {
     document.querySelector("form").addEventListener("submit", function(e) {
         if (document.getElementById("otp-verified").value !== "yes") {
@@ -457,6 +470,7 @@ document.addEventListener("DOMContentLoaded", function() {
     </body>
     </html>
     """
+
 
 
 
