@@ -425,6 +425,14 @@ def home():
                         <label for="email">Email</label>
                         <input id="email" name="email" type="email" required placeholder="student@gmail.com" onblur="sendOTP()">
                     </div>
+                    <!-- SEND OTP BUTTON -->
+<div style="margin-top:10px;">
+  <button type="button" onclick="sendOTP()" 
+          style="padding:8px 12px; background:#007bff; color:white; border:none; border-radius:6px;">
+    Send OTP
+  </button>
+</div>
+
                 </div>
 
                 <label for="parent_number">Parent Mobile Number</label>
