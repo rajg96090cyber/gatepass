@@ -1,19 +1,31 @@
 from flask import Flask, request, send_file, url_for
-import sqlite3, qrcode, io, datetime, smtplib
+import sqlite3, qrcode, io, datetime, smtplib, threading, time, random
 from email.message import EmailMessage
 
 app = Flask(__name__)
 
 # ====== CONFIG ======
-CLASS_EMAIL = "rg824797@gmail.com"
-HOD_EMAIL = "rajg96090@gmail.com"
-PRINCIPAL_EMAIL = "bhur4882@gmail.com"
-SECURITY_EMAIL = "shivrajggct73839@gmail.com"
+# NOTE: Inko apne real emails se replace kar lena
+# Year-wise Class Incharge
+CLASS_INCHARGE_MAP = {
+    "1st Year": "rajuji9828087@gmail.com",
+    "2nd Year": "rajuji9828087@gmail.com",
+    "3rd Year": "rajuji9828087@gmail.com",
+    "4th Year": "rajuji9828087@gmail.com",
+}
+
+HOD_EMAIL = "rg824797@gmail.com"          # Same HOD for all years
+PRINCIPAL_EMAIL = "raj96090@gmail.com"   # Same Principal
+REGISTRAR_EMAIL = "bhur4882@gmail.com"   # Same Registrar
+SECURITY_EMAIL = "shivrajggct73839@gmail.com"  # From your old code
 
 SENDER_EMAIL = "aids24.shivrajgupta@ggct.co.in"
 SENDER_PASS = "buekqnqazapxctme"
 
 DB_NAME = "gatepass.db"
+
+# OTP store (in-memory)
+OTP_STORE = {}  # {email: {"otp": "123456", "created_at": datetime, "verified": True/False}}
 
 
 # ====== DB HELPERS ======
@@ -46,7 +58,8 @@ def init_db():
             parent_confirm TEXT,
             created_at TEXT,
             class_note TEXT,
-            used_status TEXT DEFAULT 'No'
+            used_status TEXT DEFAULT 'No',
+            sent_to_hod_at TEXT
         )
         """
     )
@@ -78,7 +91,7 @@ def add_request(name, branch, year, roll, email, reason, out_time, date):
             date,
             "Pending",      # class_status
             "Pending",      # hod_status
-            "Pending",      # principal_status
+            "Pending",      # principal_status (final authority)
             "No",           # parent_confirm
             datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             "",             # class_note
@@ -116,6 +129,17 @@ def mark_used(req_id):
     conn.close()
 
 
+def set_sent_to_hod(req_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE requests SET sent_to_hod_at=? WHERE id=?",
+        (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), req_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_request(req_id):
     conn = get_conn()
     c = conn.cursor()
@@ -148,7 +172,82 @@ def get_base_url():
     return request.host_url.rstrip("/")
 
 
-# ====== HOME (STUDENT FORM – BLUE UI + GGCT HEADER) ======
+# ====== HOD TIMEOUT WATCHDOG (10 MIN) ======
+def start_hod_timeout_watchdog(req_id, class_email, emergency_url):
+    """
+    10 minute baad check karega:
+    Agar hod_status abhi bhi 'Pending' hai → Class Incharge ko emergency approval link bhej dega.
+    """
+    def worker():
+        # 10 minute wait
+        time.sleep(600)
+        req = get_request(req_id)
+        if not req:
+            return
+
+        # 10 = hod_status
+        if req[10] == "Pending":
+            html = f"""
+            <h3>⏰ HOD Approval Delayed (10+ minutes)</h3>
+            <p>Request ID: {req[0]}<br>
+            Name: {req[1]}<br>
+            Year: {req[3]}<br>
+            Roll: {req[4]}<br>
+            Branch: {req[2]}<br>
+            Reason: {req[6]}<br>
+            </p>
+            <p>HOD ne 10 minute tak approval nahi diya.</p>
+            <p>⚠ Emergency: Please approve on behalf of HOD:</p>
+            <a href="{emergency_url}" style="background:#ff9800;color:white;padding:10px;text-decoration:none;border-radius:6px;">
+              Emergency HOD Approval
+            </a>
+            """
+            if class_email:
+                send_email(class_email, "Emergency HOD Approval Needed", html)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+
+# ====== OTP ROUTES ======
+@app.route("/send_otp", methods=["POST"])
+def send_otp_route():
+    email = request.form.get("email", "").strip()
+    if not email:
+        return "noemail"
+
+    otp = str(random.randint(100000, 999999))
+    OTP_STORE[email] = {
+        "otp": otp,
+        "created_at": datetime.datetime.now(),
+        "verified": False,
+    }
+
+    send_email(
+        email,
+        "Your GatePass OTP",
+        f"<h2>Your OTP is: {otp}</h2><p>Valid for 10 minutes.</p>",
+    )
+    return "sent"
+
+
+@app.route("/verify_otp", methods=["POST"])
+def verify_otp():
+    email = request.form.get("email", "").strip()
+    user_otp = request.form.get("otp", "").strip()
+
+    rec = OTP_STORE.get(email)
+    if not rec:
+        return "no_otp"
+
+    if rec["otp"] == user_otp:
+        rec["verified"] = True
+        return "ok"
+    else:
+        return "wrong"
+
+
+# ====== HOME (STUDENT FORM – BLUE UI + GGCT HEADER + OTP + AIDS ONLY) ======
 @app.route("/")
 def home():
     return """
@@ -215,7 +314,7 @@ def home():
                 color: #1f2933;
                 margin-bottom: 4px;
             }
-            input {
+            input, select {
                 width: 100%;
                 padding: 9px 11px;
                 border-radius: 10px;
@@ -225,7 +324,7 @@ def home():
                 margin-bottom: 12px;
                 transition: border 0.2s, box-shadow 0.2s;
             }
-            input:focus {
+            input:focus, select:focus {
                 border-color: #1976d2;
                 box-shadow: 0 0 0 2px rgba(25,118,210,0.15);
             }
@@ -268,6 +367,10 @@ def home():
             .links a:hover {
                 text-decoration: underline;
             }
+            #otp-status {
+                margin-top: -8px;
+                margin-bottom: 8px;
+            }
         </style>
     </head>
 
@@ -278,7 +381,7 @@ def home():
 
         <div class="container">
             <div class="title">🪪 Gate Pass Request</div>
-            <div class="subtitle">Fill your details and submit for approval</div>
+            <div class="subtitle">AIDS branch students only • Email OTP verification required</div>
 
             <form method="POST" action="/submit">
                 <label for="name">Student Name</label>
@@ -287,11 +390,20 @@ def home():
                 <div class="row">
                     <div>
                         <label for="branch">Branch</label>
-                        <input id="branch" name="branch" required>
+                        <select id="branch" name="branch" required>
+                            <option value="">Select Branch</option>
+                            <option value="AIDS">AIDS</option>
+                        </select>
                     </div>
                     <div>
                         <label for="year">Year</label>
-                        <input id="year" name="year" required placeholder="1st / 2nd / 3rd / 4th">
+                        <select id="year" name="year" required>
+                            <option value="">Select Year</option>
+                            <option value="1st Year">1st Year</option>
+                            <option value="2nd Year">2nd Year</option>
+                            <option value="3rd Year">3rd Year</option>
+                            <option value="4th Year">4th Year</option>
+                        </select>
                     </div>
                 </div>
 
@@ -302,9 +414,16 @@ def home():
                     </div>
                     <div>
                         <label for="email">Email</label>
-                        <input id="email" name="email" type="email" required placeholder="student@gmail.com">
+                        <input id="email" name="email" type="email" required placeholder="student@gmail.com" onblur="sendOTP()">
                     </div>
                 </div>
+
+                <div id="otp-box" style="display:none; margin-top:4px;">
+                    <label for="otp">Email OTP</label>
+                    <input id="otp" name="otp" placeholder="Enter OTP" onblur="verifyOTP()">
+                    <p id="otp-status" style="font-size:14px;"></p>
+                </div>
+                <input type="hidden" id="otp-verified" value="no">
 
                 <label for="reason">Reason</label>
                 <input id="reason" name="reason" required placeholder="e.g. Medical / Personal">
@@ -328,6 +447,70 @@ def home():
                 <a href="/admin">📋 Admin Panel</a>
             </div>
         </div>
+
+        <script>
+        function sendOTP() {
+            let email = document.getElementById("email").value;
+            if (!email) return;
+
+            fetch("/send_otp", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: "email=" + encodeURIComponent(email)
+            })
+            .then(res => res.text())
+            .then(data => {
+                if (data === "sent") {
+                    document.getElementById("otp-box").style.display = "block";
+                    document.getElementById("otp-status").innerHTML = "OTP sent to your email ✔";
+                    document.getElementById("otp-status").style.color = "green";
+                } else {
+                    document.getElementById("otp-status").innerHTML = "Failed to send OTP ❌";
+                    document.getElementById("otp-status").style.color = "red";
+                }
+            });
+        }
+
+        function verifyOTP() {
+            let email = document.getElementById("email").value;
+            let otp = document.getElementById("otp").value;
+
+            if (!otp) return;
+
+            fetch("/verify_otp", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: "email=" + encodeURIComponent(email) + "&otp=" + encodeURIComponent(otp)
+            })
+            .then(res => res.text())
+            .then(data => {
+                if (data === "ok") {
+                    document.getElementById("otp-status").innerHTML = "OTP Verified ✔";
+                    document.getElementById("otp-status").style.color = "green";
+                    document.getElementById("otp-verified").value = "yes";
+                } else if (data === "wrong") {
+                    document.getElementById("otp-status").innerHTML = "Incorrect OTP ❌";
+                    document.getElementById("otp-status").style.color = "red";
+                    document.getElementById("otp-verified").value = "no";
+                } else {
+                    document.getElementById("otp-status").innerHTML = "No OTP found for this email ❌";
+                    document.getElementById("otp-status").style.color = "red";
+                    document.getElementById("otp-verified").value = "no";
+                }
+            });
+        }
+
+        // Prevent form submission if OTP not verified
+        document.addEventListener("DOMContentLoaded", function() {
+            const form = document.querySelector("form");
+            form.addEventListener("submit", function(e) {
+                if (document.getElementById("otp-verified").value !== "yes") {
+                    e.preventDefault();
+                    alert("Please verify OTP sent to your email before submitting!");
+                }
+            });
+        });
+        </script>
     </body>
     </html>
     """
@@ -336,14 +519,32 @@ def home():
 # ====== SUBMIT (STUDENT) ======
 @app.route("/submit", methods=["POST"])
 def submit():
-    name = request.form["name"]
-    branch = request.form["branch"]
-    year = request.form["year"]
-    roll = request.form["roll"]
-    email = request.form["email"]
-    reason = request.form["reason"]
-    out_time = request.form["out_time"]
-    date = request.form["date"]
+    name = request.form["name"].strip()
+    branch = request.form["branch"].strip()
+    year = request.form["year"].strip()
+    roll = request.form["roll"].strip()
+    email = request.form["email"].strip()
+    reason = request.form["reason"].strip()
+    out_time = request.form["out_time"].strip()
+    date = request.form["date"].strip()
+
+    # Branch restriction: Only AIDS
+    if branch.upper() != "AIDS":
+        return "<h3>❌ Only AIDS branch students can submit this form.</h3>"
+
+    # Year must be one of the keys in CLASS_INCHARGE_MAP
+    if year not in CLASS_INCHARGE_MAP:
+        return "<h3>❌ Only 1st, 2nd, 3rd, 4th year AIDS students can submit this form.</h3>"
+
+    # OTP server-side check
+    rec = OTP_STORE.get(email)
+    if not rec or not rec.get("verified"):
+        return "<h3>❌ Please verify OTP sent to your email before submitting the form.</h3>"
+
+    # YEAR wise Class Incharge select
+    class_email = CLASS_INCHARGE_MAP.get(year)
+    if not class_email:
+        return "<h3>❌ No Class Incharge configured for this year.</h3>"
 
     req_id = add_request(name, branch, year, roll, email, reason, out_time, date)
 
@@ -355,6 +556,7 @@ def submit():
     html_class = f"""
     <h3>🪪 New Gate Pass Request</h3>
     <p>
+    <b>Request ID:</b> {req_id}<br>
     <b>Name:</b> {name}<br>
     <b>Branch:</b> {branch}<br>
     <b>Year:</b> {year}<br>
@@ -365,7 +567,7 @@ def submit():
     <b>Date:</b> {date}<br>
     </p>
 
-    <p>🔗 Live QR Status: <a href="{qr_url}">View QR</a></p>
+    <p>🔗 Live QR Status (will work after HOD approval): <a href="{qr_url}">View QR</a></p>
     <img src="{qr_url}" alt="GatePass QR"><br><br>
 
     <a href="{approve_url}" style="background:green;color:white;padding:10px;text-decoration:none;">
@@ -377,16 +579,17 @@ def submit():
     </a>
     """
 
-    send_email(CLASS_EMAIL, f"Gate Pass Request from {name}", html_class)
+    # Class Incharge (year-wise) ko mail
+    send_email(class_email, f"Gate Pass Request from {name}", html_class)
 
     # Student ko confirmation
     send_email(
         email,
         "Gate Pass Submitted",
-        f"<h3>Your gate pass request is submitted.</h3><p>Status: Pending (Class Incharge)</p><p>QR: <a href='{qr_url}'>View QR</a></p>",
+        f"<h3>Your gate pass request is submitted.</h3><p>Status: Pending (Class Incharge)</p><p>QR (will work after HOD approval): <a href='{qr_url}'>View QR</a></p>",
     )
 
-    return "<h3>✅ Request submitted successfully! Sent to Class Incharge & Student.</h3>"
+    return "<h3>✅ Request submitted successfully! Sent to Year-wise Class Incharge & Student.</h3>"
 
 
 # ====== CLASS INCHARGE ======
@@ -399,7 +602,7 @@ def class_approve(req_id):
     # data index:
     # 0:id 1:name 2:branch 3:year 4:roll 5:email 6:reason 7:out_time 8:date
     # 9:class_status 10:hod_status 11:principal_status
-    # 12:parent_confirm 13:created_at 14:class_note 15:used_status
+    # 12:parent_confirm 13:created_at 14:class_note 15:used_status 16:sent_to_hod_at
 
     if request.method == "POST":
         action = request.form.get("action")
@@ -429,6 +632,7 @@ def class_approve(req_id):
             {note_html}
 
             <p>
+            <b>Request ID:</b> {data[0]}<br>
             <b>Name:</b> {data[1]}<br>
             <b>Branch:</b> {data[2]}<br>
             <b>Year:</b> {data[3]}<br>
@@ -440,7 +644,7 @@ def class_approve(req_id):
             <b>Class Incharge Status:</b> {data[9]}<br>
             </p>
 
-            <p>🔗 Live QR Status: <a href="{qr_url}">View QR</a></p>
+            <p>🔗 Live QR Status (will work after HOD approval): <a href="{qr_url}">View QR</a></p>
             <img src="{qr_url}" alt="GatePass QR"><br><br>
 
             <a href="{hod_approve_url}" style="background:green;color:white;padding:10px;text-decoration:none;">
@@ -452,13 +656,23 @@ def class_approve(req_id):
             </a>
             """
 
+            # HOD ko mail
             send_email(HOD_EMAIL, "HOD Approval Needed – Gate Pass", html_hod)
+
+            # HOD sent time save
+            set_sent_to_hod(req_id)
+
+            # Emergency HOD approval link (Class Incharge ke liye)
+            year = data[3]
+            class_email = CLASS_INCHARGE_MAP.get(year)
+            emergency_url = f"{base}{url_for('emergency_hod_approve', req_id=req_id)}"
+            start_hod_timeout_watchdog(req_id, class_email, emergency_url)
 
             # Student notification
             send_email(
                 data[5],
                 "Gate Pass Update – Class Incharge Approved",
-                f"<h3>Your gate pass is APPROVED by Class Incharge.</h3><p>Next: HOD Approval</p><p>QR: <a href='{qr_url}'>View QR</a></p>",
+                f"<h3>Your gate pass is APPROVED by Class Incharge.</h3><p>Next: HOD Approval</p><p>QR (will work after HOD approval): <a href='{qr_url}'>View QR</a></p>",
             )
 
             return "<h3>✅ Class Incharge Approved and sent to HOD.</h3>"
@@ -506,6 +720,33 @@ def class_reject(req_id):
     return "<h3>❌ Class Incharge Rejected the Request.</h3>"
 
 
+# ====== EMERGENCY HOD APPROVAL BY CLASS INCHARGE ======
+@app.route("/emergency_hod_approve/<int:req_id>")
+def emergency_hod_approve(req_id):
+    data = get_request(req_id)
+    if not data:
+        return "<h3>❌ Invalid Request ID</h3>"
+
+    # Agar HOD already approve kar chuka hai
+    if data[10] == "Approved":
+        return "<h3>✅ Already approved by HOD. Emergency approval not required.</h3>"
+
+    # Emergency HOD approval by Class Incharge
+    update_status(req_id, "hod_status", "Approved")
+
+    # Student ko info
+    base = get_base_url()
+    qr_url = f"{base}{url_for('qrcode_route', req_id=req_id)}"
+    send_email(
+        data[5],
+        "Gate Pass Update – HOD Approved (Emergency by Class Incharge)",
+        f"<h3>Your gate pass is APPROVED (Emergency by Class Incharge on behalf of HOD).</h3><p>Next: Final Approval (Principal / Registrar)</p><p>QR: <a href='{qr_url}'>View QR</a></p>",
+    )
+
+    # Principal + Registrar ko mail (same as normal HOD approve)
+    return hod_approve(req_id)
+
+
 # ====== HOD ======
 @app.route("/hod_approve/<int:req_id>")
 def hod_approve(req_id):
@@ -515,8 +756,8 @@ def hod_approve(req_id):
         return "<h3>❌ Invalid Request ID</h3>"
 
     base = get_base_url()
-    principal_approve_url = f"{base}{url_for('principal_approve', req_id=req_id)}"
-    principal_reject_url = f"{base}{url_for('principal_reject', req_id=req_id)}"
+    final_approve_url = f"{base}{url_for('final_approve', req_id=req_id)}"
+    final_reject_url = f"{base}{url_for('final_reject', req_id=req_id)}"
     qr_url = f"{base}{url_for('qrcode_route', req_id=req_id)}"
 
     note_html = f"""
@@ -525,12 +766,13 @@ def hod_approve(req_id):
     </div><br>
     """
 
-    html_principal = f"""
+    html_final = f"""
     <h3>📩 Gate Pass Request (HOD Approved)</h3>
 
     {note_html}
 
     <p>
+    <b>Request ID:</b> {data[0]}<br>
     <b>Name:</b> {data[1]}<br>
     <b>Branch:</b> {data[2]}<br>
     <b>Year:</b> {data[3]}<br>
@@ -543,28 +785,30 @@ def hod_approve(req_id):
     <b>HOD Status:</b> {data[10]}<br>
     </p>
 
-    <p>🔗 Live QR Status: <a href="{qr_url}">View QR</a></p>
+    <p>🔗 Live QR Status (now visible, but not usable until final approval): <a href="{qr_url}">View QR</a></p>
     <img src="{qr_url}" alt="GatePass QR"><br><br>
 
-    <a href="{principal_approve_url}" style="background:green;color:white;padding:10px;text-decoration:none;">
-      ✅ Approve
+    <a href="{final_approve_url}" style="background:green;color:white;padding:10px;text-decoration:none;">
+      ✅ Final Approve (Principal / Registrar)
     </a>
     &nbsp;
-    <a href="{principal_reject_url}" style="background:red;color:white;padding:10px;text-decoration:none;">
-      ❌ Reject
+    <a href="{final_reject_url}" style="background:red;color:white;padding:10px;text-decoration:none;">
+      ❌ Final Reject
     </a>
     """
 
-    send_email(PRINCIPAL_EMAIL, "Principal Approval Needed – Gate Pass", html_principal)
+    # Principal + Registrar – same mail, same links
+    send_email(PRINCIPAL_EMAIL, "Final Approval Needed – Gate Pass", html_final)
+    send_email(REGISTRAR_EMAIL, "Final Approval Needed – Gate Pass", html_final)
 
     # Student notification
     send_email(
         data[5],
         "Gate Pass Update – HOD Approved",
-        f"<h3>Your gate pass is APPROVED by HOD.</h3><p>Next: Principal Approval</p><p>QR: <a href='{qr_url}'>View QR</a></p>",
+        f"<h3>Your gate pass is APPROVED by HOD.</h3><p>Next: Final Approval (Principal / Registrar)</p><p>QR: <a href='{qr_url}'>View QR</a></p>",
     )
 
-    return "<h3>✅ HOD Approved and sent to Principal.</h3>"
+    return "<h3>✅ HOD Approved and sent to Principal & Registrar (parallel).</h3>"
 
 
 @app.route("/hod_reject/<int:req_id>")
@@ -580,29 +824,31 @@ def hod_reject(req_id):
     return "<h3>❌ HOD Rejected the Request.</h3>"
 
 
-# ====== PRINCIPAL ======
-@app.route("/principal_approve/<int:req_id>")
-def principal_approve(req_id):
-    update_status(req_id, "principal_status", "Approved")
+# ====== FINAL APPROVAL (PRINCIPAL or REGISTRAR – whoever first) ======
+@app.route("/final_approve/<int:req_id>")
+def final_approve(req_id):
     data = get_request(req_id)
     if not data:
         return "<h3>❌ Invalid Request ID</h3>"
 
+    # 11 = principal_status (final approval status)
+    if data[11] == "Approved":
+        return "<h3>✅ Gate Pass already finally approved by another authority.</h3>"
+
+    if data[11] == "Rejected":
+        return "<h3>❌ Gate Pass already rejected earlier.</h3>"
+
+    # Mark as fully approved
+    update_status(req_id, "principal_status", "Approved")
+
     base = get_base_url()
     qr_url = f"{base}{url_for('qrcode_route', req_id=req_id)}"
 
-    note_html = f"""
-    <div style='border:2px solid #0084ff; padding:10px; border-radius:8px; background:#e7f1ff;'>
-      <b>📌 Note from Class Incharge:</b><br>{data[14] or 'No note given.'}
-    </div><br>
-    """
-
+    # Security ko final QR
     html_security = f"""
-    <h3>✅ Final Gate Pass Approved by Principal</h3>
-
-    {note_html}
-
+    <h3>✅ Final Gate Pass Approved</h3>
     <p>
+    <b>Request ID:</b> {data[0]}<br>
     <b>Name:</b> {data[1]}<br>
     <b>Branch:</b> {data[2]}<br>
     <b>Year:</b> {data[3]}<br>
@@ -613,7 +859,7 @@ def principal_approve(req_id):
     <b>Date:</b> {data[8]}<br>
     <b>Class Incharge Status:</b> {data[9]}<br>
     <b>HOD Status:</b> {data[10]}<br>
-    <b>Principal Status:</b> {data[11]}<br>
+    <b>Final Approval Status:</b> Approved<br>
     </p>
 
     <p>🔗 Final QR: <a href="{qr_url}">View QR</a></p>
@@ -622,39 +868,64 @@ def principal_approve(req_id):
 
     send_email(SECURITY_EMAIL, "Final Gate Pass QR – Security Check", html_security)
 
-    # Student notification
+    # Student notification with final QR
     send_email(
         data[5],
-        "Gate Pass Fully Approved – Principal",
-        f"<h3>Your gate pass is FULLY APPROVED by Principal.</h3><p>Show this QR at Security.</p><p>QR: <a href='{qr_url}'>View QR</a></p>",
+        "Gate Pass Fully Approved",
+        f"<h3>Your gate pass is FULLY APPROVED.</h3><p>Show this QR at Security.</p><p>QR: <a href='{qr_url}'>View QR</a></p>",
     )
 
-    return "<h3>✅ Principal Approved. Final QR sent to Security & Student.</h3>"
+    return "<h3>✅ Final Approved. QR sent to Student & Security.</h3>"
+
+
+@app.route("/final_reject/<int:req_id>")
+def final_reject(req_id):
+    data = get_request(req_id)
+    if not data:
+        return "<h3>❌ Invalid Request ID</h3>"
+
+    if data[11] == "Approved":
+        return "<h3>✅ Already approved earlier. Cannot reject now.</h3>"
+
+    update_status(req_id, "principal_status", "Rejected")
+
+    send_email(
+        data[5],
+        "Gate Pass Rejected at Final Approval",
+        "<h3>Your gate pass has been REJECTED at Final Approval (Principal / Registrar).</h3>",
+    )
+
+    return "<h3>❌ Final Authority Rejected the Request.</h3>"
+
+
+# Backward compatibility: old principal routes → final routes
+@app.route("/principal_approve/<int:req_id>")
+def principal_approve(req_id):
+    return final_approve(req_id)
 
 
 @app.route("/principal_reject/<int:req_id>")
 def principal_reject(req_id):
-    update_status(req_id, "principal_status", "Rejected")
-    data = get_request(req_id)
-    if data:
-        send_email(
-            data[5],
-            "Gate Pass Rejected by Principal",
-            "<h3>Your gate pass has been REJECTED by Principal.</h3>",
-        )
-    return "<h3>❌ Principal Rejected the Request.</h3>"
+    return final_reject(req_id)
 
 
-# ====== QR CODE (DYNAMIC) ======
+# ====== QR CODE (DYNAMIC, VISIBLE ONLY AFTER HOD APPROVAL) ======
 @app.route("/qrcode/<int:req_id>")
 def qrcode_route(req_id):
     data = get_request(req_id)
     if not data:
         return "No such record found."
 
+    # HOD approval required to show QR
+    if data[10] != "Approved":  # 10 = hod_status
+        return """
+        <h3>⛔ QR Not Available Yet</h3>
+        <p>HOD approval is required before QR can be viewed.</p>
+        """
+
     qr_data = (
         f"GatePass ID:{data[0]} | Name:{data[1]} | Year:{data[3]} | Branch:{data[2]} | "
-        f"Roll:{data[4]} | Class:{data[9]} | HOD:{data[10]} | Principal:{data[11]}"
+        f"Roll:{data[4]} | Class:{data[9]} | HOD:{data[10]} | Final:{data[11]}"
     )
 
     img = qrcode.make(qr_data)
@@ -665,26 +936,30 @@ def qrcode_route(req_id):
     return send_file(buf, mimetype="image/png")
 
 
-# ====== SECURITY SCANNER PAGE ======
+# ====== SECURITY SCANNER PAGE (Scanner 2.0) ======
 @app.route("/scanner")
 def scanner():
     return """
     <h2>🔍 Security QR Scanner</h2>
-    <video id='preview' width='300'></video>
+    <div id="reader" style="width: 320px; max-width: 100%;"></div>
 
-    <script src='https://cdnjs.cloudflare.com/ajax/libs/instascan/1.0.0/instascan.min.js'></script>
-    
+    <script src="https://unpkg.com/html5-qrcode"></script>
+
     <script>
-        let scanner = new Instascan.Scanner({ video: document.getElementById('preview') });
+        function onScanSuccess(decodedText, decodedResult) {
+            // QR milte hi verify page pe redirect
+            window.location.href = '/verify?q=' + encodeURIComponent(decodedText);
+        }
 
-        scanner.addListener('scan', function (content) {
-            window.location.href = '/verify?q=' + encodeURIComponent(content);
-        });
+        function onScanFailure(error) {
+            console.log(error);
+        }
 
-        Instascan.Camera.getCameras().then(cameras => {
-            if(cameras.length > 0) scanner.start(cameras[0]);
-            else alert("No Camera Found");
-        });
+        let html5QrcodeScanner = new Html5QrcodeScanner(
+            "reader",
+            { fps: 10, qrbox: 250 }
+        );
+        html5QrcodeScanner.render(onScanSuccess, onScanFailure);
     </script>
     """
 
@@ -692,28 +967,42 @@ def scanner():
 # ====== VERIFY (ONE-TIME USE) ======
 @app.route("/verify")
 def verify_qr():
-    data = request.args.get("q", "")
+    raw = request.args.get("q", "")
 
+    # 1) QR se GatePass ID nikaalo
     try:
-        gp_id_str = data.split("GatePass ID:")[1].split("|")[0].strip()
+        gp_id_str = raw.split("GatePass ID:")[1].split("|")[0].strip()
         gp_id = int(gp_id_str)
     except Exception:
-        return "<h3>❌ Invalid QR Code</h3>"
+        return "<h3>❌ Invalid QR Code Format</h3>"
 
+    # 2) DB se record nikaalo
     req = get_request(gp_id)
     if not req:
-        return "<h3>❌ No record found!</h3>"
+        return "<h3>❌ No record found for this GatePass ID.</h3>"
 
-    # already used?
+    # Index:
+    # 0:id, 1:name, 2:branch, 3:year, 4:roll, 5:email, 6:reason,
+    # 7:out_time, 8:date, 9:class_status, 10:hod_status,
+    # 11:principal_status, 12:parent_confirm, 13:created_at,
+    # 14:class_note, 15:used_status, 16:sent_to_hod_at
+
+    # 3) Check: pehle use ho chuka hai kya?
     if req[15] == "Yes":
         return """
         <h2>❌ ALREADY USED</h2>
-        <p>This gate pass has already been used at security.</p>
+        <p>This gate pass has already been used at security. Student cannot reuse this QR.</p>
         """
 
-    # approved?
-    if req[9] == "Approved" and req[10] == "Approved" and req[11] == "Approved":
+    # 4) Check: sabne approve kiya hai kya? (Class + HOD + Final)
+    if (
+        req[9] == "Approved" and    # Class Incharge
+        req[10] == "Approved" and   # HOD
+        req[11] == "Approved"       # Final (Principal or Registrar)
+    ):
+        # 5) Abhi pehli baar use ho raha hai → mark as used
         mark_used(gp_id)
+
         return f"""
         <h2>✅ VALID PASS (Now Marked as Used)</h2>
         <p><b>Name:</b> {req[1]}</p>
@@ -725,10 +1014,15 @@ def verify_qr():
         <p><b>Date:</b> {req[8]}</p>
         <p><b>Class Incharge:</b> {req[9]}</p>
         <p><b>HOD:</b> {req[10]}</p>
-        <p><b>Principal:</b> {req[11]}</p>
+        <p><b>Final Approval:</b> {req[11]}</p>
         """
     else:
-        return "<h2>❌ NOT APPROVED</h2><p>Student cannot leave the campus.</p>"
+        # Abhi tak full approve nahi hua
+        return """
+        <h2>❌ NOT FULLY APPROVED</h2>
+        <p>All approvals (Class Incharge, HOD, Final Authority) are required
+        before student can leave the campus.</p>
+        """
 
 
 # ====== ADMIN PANEL ======
@@ -741,7 +1035,7 @@ def admin():
     conn.close()
 
     html = "<h2>📋 All Gate Pass Requests</h2><table border=1>"
-    html += "<tr><th>ID</th><th>Name</th><th>Year</th><th>Roll</th><th>Class</th><th>HOD</th><th>Principal</th><th>Used?</th></tr>"
+    html += "<tr><th>ID</th><th>Name</th><th>Year</th><th>Roll</th><th>Class</th><th>HOD</th><th>Final</th><th>Used?</th></tr>"
 
     for r in rows:
         html += f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[3]}</td><td>{r[4]}</td><td>{r[9]}</td><td>{r[10]}</td><td>{r[11]}</td><td>{r[15]}</td></tr>"
@@ -752,5 +1046,5 @@ def admin():
 
 # ====== MAIN ======
 if __name__ == "__main__":
-    init_db()  # har run pe sahi table banega
+    init_db()  # har run pe sahi table banega (ye pura DB reset karega)
     app.run(host="0.0.0.0", port=5000, debug=True)
